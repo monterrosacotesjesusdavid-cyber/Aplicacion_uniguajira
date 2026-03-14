@@ -3,7 +3,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 // ⚠️ CAMBIA ESTO POR LA URL DE TU SERVIDOR
-const String kBase = 'https://TU_DOMINIO.com/api';
+const String kBase = 'https://nodeapkuniguajira-production.up.railway.app/api';
 
 class Api {
   // ── PREFS ─────────────────────────────────────────────────────────
