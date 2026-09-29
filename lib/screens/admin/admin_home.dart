@@ -6,6 +6,7 @@ import '../auth/login_screen.dart';
 import 'dashboard_screen.dart';
 import 'profesores_stats_screen.dart';
 import 'asistencias_screen.dart';
+import 'offline_screen.dart';
 
 class AdminHome extends StatefulWidget {
   const AdminHome({super.key});
@@ -51,6 +52,7 @@ class _AdminHomeState extends State<AdminHome> {
       DashboardScreen(),
       ProfesoresStatsScreen(),
       AdminAsistenciasScreen(),
+      OfflineAdminScreen(),
     ];
     return Scaffold(
       appBar: AppBar(
@@ -83,6 +85,7 @@ class _AdminHomeState extends State<AdminHome> {
         decoration: const BoxDecoration(border: Border(top: BorderSide(color: C.borde))),
         child: BottomNavigationBar(
           currentIndex: _idx,
+          type: BottomNavigationBarType.fixed,
           onTap: (i) => setState(() => _idx = i),
           items: const [
             BottomNavigationBarItem(
@@ -91,6 +94,8 @@ class _AdminHomeState extends State<AdminHome> {
               icon: Icon(Icons.people_rounded), label: 'Profesores'),
             BottomNavigationBarItem(
               icon: Icon(Icons.fact_check_rounded), label: 'Asistencias'),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.pending_actions_rounded), label: 'Por aprobar'),
           ],
         ),
       ),
