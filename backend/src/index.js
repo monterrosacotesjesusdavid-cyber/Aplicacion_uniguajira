@@ -137,7 +137,9 @@ app.get('/api/estudiante/clases', auth(['estudiante']), wrap(async (req, res) =>
     SELECT h.id, h.materia, p.nombre AS profesor_nombre, COALESCE(s.nombre,'') AS salon,
            h.hora_inicio::text AS hora_inicio, h.hora_fin::text AS hora_fin,
            EXISTS (SELECT 1 FROM asistencias_estudiante a
-                   WHERE a.horario_id=h.id AND a.estudiante_id=$1 AND a.fecha=$3::date) AS ya_firmo
+                   WHERE a.horario_id=h.id AND a.estudiante_id=$1 AND a.fecha=$3::date) AS ya_firmo,
+           EXISTS (SELECT 1 FROM sesiones_clase sc
+                   WHERE sc.horario_id=h.id AND sc.fecha=$3::date AND sc.cerrada_en IS NULL) AS sesion_abierta
     FROM inscripciones i
     JOIN horarios h ON h.id=i.horario_id
     JOIN profesores p ON p.id=h.profesor_id
@@ -147,8 +149,21 @@ app.get('/api/estudiante/clases', auth(['estudiante']), wrap(async (req, res) =>
   res.json(r.rows.map((c) => {
     if (c.ya_firmo) return { ...c, disponible: false, mensaje: 'Firmado' };
     const v = L.ventanaEstudiante(L.toMin(c.hora_inicio), L.toMin(c.hora_fin), t.min);
+    if (v.disponible && !c.sesion_abierta)
+      return { ...c, disponible: false, esperando_profesor: true, mensaje: 'Esperando que el profesor habilite la asistencia' };
     return { ...c, disponible: v.disponible, mensaje: v.mensaje };
   }));
+}));
+
+// Horario completo de la semana: la app lo guarda para poder mostrar las clases sin internet
+app.get('/api/estudiante/horario-semana', auth(['estudiante']), wrap(async (req, res) => {
+  const r = await q(`
+    SELECT h.id, h.dia_semana AS dia_num, h.materia, p.nombre AS profesor_nombre, COALESCE(s.nombre,'') AS salon,
+           h.hora_inicio::text AS hora_inicio, h.hora_fin::text AS hora_fin
+    FROM inscripciones i JOIN horarios h ON h.id=i.horario_id
+    JOIN profesores p ON p.id=h.profesor_id LEFT JOIN salones s ON s.id=h.salon_id
+    WHERE i.estudiante_id=$1 ORDER BY h.dia_semana, h.hora_inicio`, [req.user.sub]);
+  res.json(r.rows);
 }));
 
 app.get('/api/estudiante/asistencias/:id', auth(['estudiante']), wrap(async (req, res) => {
@@ -192,6 +207,8 @@ app.post('/api/estudiante/firmar', auth(['estudiante']), limFirma, wrap(async (r
   if (ya.rowCount) throw new ErrorApp(409, 'Ya firmaste esta clase', 'YA_REGISTRADA');
   const v = L.ventanaEstudiante(L.toMin(h.ini), L.toMin(h.fin), t.min);
   if (!v.disponible) throw new ErrorApp(403, v.mensaje, 'FUERA_DE_HORARIO');
+  const ses = await q('SELECT 1 FROM sesiones_clase WHERE horario_id=$1 AND fecha=$2::date AND cerrada_en IS NULL', [hid, t.fecha]);
+  if (!ses.rowCount) throw new ErrorApp(403, 'El profesor aún no ha habilitado la asistencia', 'SESION_CERRADA');
   const z = L.chequearZona(lat, lon, h);
   if (!z.ok) throw new ErrorApp(403, `Estás fuera del salón (a ${z.dist} m)`, 'FUERA_DE_ZONA');
   const f = await verificarRostro('estudiante', req.user.sub, req.body.foto_base64);
@@ -210,7 +227,11 @@ app.get('/api/profesor/clases-hoy', auth(['profesor']), wrap(async (req, res) =>
   const r = await q(`
     SELECT h.id, h.materia, COALESCE(s.nombre,'') AS salon, NULLIF(s.bloque,'') AS bloque,
            h.hora_inicio::text AS hora_inicio, h.hora_fin::text AS hora_fin,
-           a.estado AS asistencia_estado, ${HORA_ISO('a.hora_registro')} AS hora_registro
+           a.estado AS asistencia_estado, ${HORA_ISO('a.hora_registro')} AS hora_registro,
+           EXISTS (SELECT 1 FROM sesiones_clase sc WHERE sc.horario_id=h.id AND sc.fecha=$3::date
+                   AND sc.cerrada_en IS NULL) AS sesion_abierta,
+           (SELECT count(*)::int FROM asistencias_estudiante ae WHERE ae.horario_id=h.id AND ae.fecha=$3::date) AS estudiantes_firmaron,
+           (SELECT count(*)::int FROM inscripciones i WHERE i.horario_id=h.id) AS estudiantes_total
     FROM horarios h
     LEFT JOIN salones s ON s.id=h.salon_id
     LEFT JOIN asistencias_profesor a ON a.horario_id=h.id AND a.fecha=$3::date
@@ -225,11 +246,11 @@ app.get('/api/profesor/clases-hoy', auth(['profesor']), wrap(async (req, res) =>
 
 app.get('/api/profesor/horario-semana', auth(['profesor']), wrap(async (req, res) => {
   const r = await q(`
-    SELECT h.dia_semana, h.materia, COALESCE(s.nombre,'') AS salon,
+    SELECT h.id, h.dia_semana, h.materia, COALESCE(s.nombre,'') AS salon, NULLIF(s.bloque,'') AS bloque,
            h.hora_inicio::text AS hora_inicio, h.hora_fin::text AS hora_fin
     FROM horarios h LEFT JOIN salones s ON s.id=h.salon_id
     WHERE h.profesor_id=$1 ORDER BY h.dia_semana, h.hora_inicio`, [req.user.sub]);
-  res.json(r.rows.map((c) => ({ ...c, dia_semana: DIAS[c.dia_semana] })));
+  res.json(r.rows.map((c) => ({ ...c, dia_num: c.dia_semana, dia_semana: DIAS[c.dia_semana] })));
 }));
 
 app.post('/api/profesor/registrar-asistencia', auth(['profesor']), limFirma, wrap(async (req, res) => {
@@ -257,6 +278,108 @@ app.post('/api/profesor/registrar-asistencia', auth(['profesor']), limFirma, wra
       [hid, req.user.sub, t.fecha, v.estado, v.tarde, lat, lon, z.dist, f.score, f.hash]);
   } catch (err) { dupe(err); }
   res.json({ success: true, estado: v.estado, minutos_tarde: v.tarde });
+}));
+
+
+// El profesor habilita / cierra la firma de sus estudiantes (solo si ya registró su propia asistencia)
+app.post('/api/profesor/sesion', auth(['profesor']), limUser(20), wrap(async (req, res) => {
+  const hid = parseInt(req.body?.horario_id, 10);
+  const abrir = req.body?.abrir === true;
+  if (!hid) throw new ErrorApp(400, 'Clase inválida', 'BAD_REQUEST');
+  const t = L.ahora();
+  const r = await q(`SELECT h.hora_fin::text AS fin FROM horarios h
+                     WHERE h.id=$1 AND h.profesor_id=$2 AND h.dia_semana=$3`, [hid, req.user.sub, t.dow]);
+  if (!r.rows[0]) throw new ErrorApp(404, 'Esa clase no es hoy o no te pertenece', 'NO_CLASE');
+  if (abrir) {
+    const reg = await q('SELECT 1 FROM asistencias_profesor WHERE horario_id=$1 AND fecha=$2::date', [hid, t.fecha]);
+    if (!reg.rowCount) throw new ErrorApp(403, 'Primero registra tu asistencia', 'PROFESOR_NO_REGISTRADO');
+    if (t.min > L.toMin(r.rows[0].fin)) throw new ErrorApp(403, 'La clase ya terminó', 'FUERA_DE_HORARIO');
+    await q(`INSERT INTO sesiones_clase (horario_id, fecha) VALUES ($1,$2::date)
+             ON CONFLICT (horario_id, fecha) DO UPDATE SET cerrada_en=NULL`, [hid, t.fecha]);
+  } else {
+    await q('UPDATE sesiones_clase SET cerrada_en=now() WHERE horario_id=$1 AND fecha=$2::date', [hid, t.fecha]);
+  }
+  res.json({ success: true, sesion_abierta: abrir });
+}));
+
+// ── ASISTENCIA OFFLINE ─────────────────────────────────────────────
+// La app guarda foto+GPS+hora sin internet. Al volver la conexión pide una selfie
+// con prueba de vida (identidad) y envía todo aquí; un admin aprueba o rechaza.
+const TABLA_ASIST = { profesor: ['asistencias_profesor', 'profesor_id'], estudiante: ['asistencias_estudiante', 'estudiante_id'] };
+
+async function puntuarRostro(rol, id, buf) {          // no lanza si no coincide: solo informa el puntaje
+  try {
+    const r = await q('SELECT embedding_enc FROM rostros_faciales WHERE usuario_id=$1 AND rol=$2', [id, rol]);
+    if (!r.rows[0]) return null;
+    const v = await L.faceCall('/v1/verify', buf, L.decrypt(r.rows[0].embedding_enc));
+    return v.score;
+  } catch { return null; }
+}
+
+app.post('/api/offline/sincronizar', auth(['profesor', 'estudiante']), limUser(20), wrap(async (req, res) => {
+  const b = req.body || {}, { rol, sub } = req.user;
+  const cid = String(b.client_id || '');
+  if (!/^[0-9a-f]{16,64}$/i.test(cid)) throw new ErrorApp(400, 'Registro inválido', 'BAD_REQUEST');
+  const hid = parseInt(b.horario_id, 10);
+  const lat = b.latitud == null ? null : Number(b.latitud), lon = b.longitud == null ? null : Number(b.longitud);
+  if (!hid || (lat != null && (!Number.isFinite(lat) || Math.abs(lat) > 90)) || (lon != null && (!Number.isFinite(lon) || Math.abs(lon) > 180)))
+    throw new ErrorApp(400, 'Datos incompletos', 'BAD_REQUEST');
+  const hd = new Date(b.hora_dispositivo);
+  if (isNaN(hd)) throw new ErrorApp(400, 'Hora inválida', 'BAD_REQUEST');
+  if (hd.getTime() > Date.now() + 5 * 60000) throw new ErrorApp(400, 'La hora del celular está en el futuro', 'HORA_INVALIDA');
+  if (hd.getTime() < Date.now() - 7 * 86400000) throw new ErrorApp(400, 'La evidencia tiene más de 7 días', 'EVIDENCIA_VIEJA');
+  if (b.liveness !== true) throw new ErrorApp(400, 'Falta la prueba de vida', 'SIN_LIVENESS');
+
+  // Idempotencia: si el celular reintenta un envío ya recibido, no se duplica.
+  const prev = await q('SELECT rol, usuario_id, estado FROM asistencias_offline WHERE client_id=$1', [cid]);
+  if (prev.rows[0]) {
+    if (prev.rows[0].rol !== rol || prev.rows[0].usuario_id !== sub) throw new ErrorApp(409, 'Registro inválido', 'BAD_REQUEST');
+    return res.json({ success: true, duplicado: true, estado: prev.rows[0].estado });
+  }
+  const act = await q(`SELECT activo FROM ${TABLA[rol]} WHERE id=$1`, [sub]);
+  if (!act.rows[0]?.activo) throw new ErrorApp(403, 'Cuenta desactivada', 'INACTIVO');
+
+  const t = L.ahora(hd);
+  const r = rol === 'profesor'
+    ? await q(`SELECT h.dia_semana, s.lat, s.lon, s.radio_m FROM horarios h LEFT JOIN salones s ON s.id=h.salon_id
+               WHERE h.id=$1 AND h.profesor_id=$2`, [hid, sub])
+    : await q(`SELECT h.dia_semana, s.lat, s.lon, s.radio_m FROM inscripciones i JOIN horarios h ON h.id=i.horario_id
+               LEFT JOIN salones s ON s.id=h.salon_id WHERE i.estudiante_id=$1 AND h.id=$2`, [sub, hid]);
+  const h = r.rows[0];
+  if (!h) throw new ErrorApp(404, 'Esa clase no te corresponde', 'NO_CLASE');
+  if (h.dia_semana !== t.dow) throw new ErrorApp(400, 'La fecha no corresponde al día de esa clase', 'FECHA_INVALIDA');
+  const [tabla, col] = TABLA_ASIST[rol];
+  const ya = await q(`SELECT 1 FROM ${tabla} WHERE horario_id=$1 AND ${col}=$2 AND fecha=$3::date`, [hid, sub, t.fecha]);
+  if (ya.rowCount) throw new ErrorApp(409, 'Ya tenías esta asistencia registrada', 'YA_REGISTRADA');
+
+  // 1) Selfie de envío: confirma que quien envía es el dueño de la cuenta (obligatoria y bloqueante)
+  await verificarRostro(rol, sub, b.foto_verificacion_base64);
+  // 2) Foto de evidencia: solo se puntúa, la decisión es del admin
+  const evid = L.decodificarFoto(b.foto_evidencia_base64);
+  const scoreEv = await puntuarRostro(rol, sub, evid);
+  const scoreEnvio = (await puntuarRostro(rol, sub, L.decodificarFoto(b.foto_verificacion_base64)));
+  const z = lat != null && lon != null ? L.chequearZona(lat, lon, h) : { ok: false, dist: null };
+
+  try {
+    await q(`INSERT INTO asistencias_offline
+      (client_id, rol, usuario_id, horario_id, fecha, hora_dispositivo, lat, lon, distancia_m, fuera_zona,
+       foto_evidencia, score_evidencia, score_envio)
+      VALUES ($1,$2,$3,$4,$5::date,$6,$7,$8,$9,$10,$11,$12,$13)`,
+      [cid, rol, sub, hid, t.fecha, hd.toISOString(), lat, lon, z.dist, !z.ok, evid, scoreEv, scoreEnvio]);
+  } catch (e) {
+    if (e.code !== '23505') throw e;
+    if (/client_id/.test(e.constraint || '')) return res.json({ success: true, duplicado: true, estado: 'pendiente' });
+    throw new ErrorApp(409, 'Ya enviaste una evidencia para esta clase', 'YA_REGISTRADA');
+  }
+  res.json({ success: true, estado: 'pendiente' });
+}));
+
+app.get('/api/offline/mis', auth(['profesor', 'estudiante']), wrap(async (req, res) => {
+  const r = await q(`
+    SELECT o.client_id, o.estado, o.motivo, h.materia, to_char(o.fecha,'YYYY-MM-DD') AS fecha
+    FROM asistencias_offline o JOIN horarios h ON h.id=o.horario_id
+    WHERE o.rol=$1 AND o.usuario_id=$2 ORDER BY o.hora_envio DESC LIMIT 50`, [req.user.rol, req.user.sub]);
+  res.json(r.rows);
 }));
 
 // ── ADMIN ──────────────────────────────────────────────────────────
@@ -360,6 +483,82 @@ app.get('/api/admin/profesores/:id/detalle', admin, wrap(async (req, res) => {
        ORDER BY d DESC, h.hora_inicio DESC LIMIT 100`, [id, t.fecha, cfg.limiteMin, t.hora]),
   ]);
   res.json({ ...p.rows[0], estadisticas: st.rows[0], historial: hist.rows });
+}));
+
+// ── Revisión de asistencias offline ────────────────────────────────
+app.get('/api/admin/offline', admin, wrap(async (req, res) => {
+  const { page, limit, offset } = pag(req);
+  const est = ['pendiente', 'aprobada', 'rechazada'].includes(req.query.estado) ? req.query.estado : 'pendiente';
+  const r = await q(`
+    SELECT o.id, o.rol, o.estado, o.motivo, COALESCE(p.nombre, e.nombre) AS nombre, h.materia,
+           COALESCE(s.nombre,'') AS salon, ${HORA_ISO('o.hora_dispositivo')} AS hora_dispositivo,
+           ${HORA_ISO('o.hora_envio')} AS hora_envio, o.distancia_m, o.fuera_zona,
+           o.score_evidencia, o.score_envio,
+           (SELECT count(*)::int FROM asistencias_offline WHERE estado=$1) AS total
+    FROM asistencias_offline o
+    JOIN horarios h ON h.id=o.horario_id
+    LEFT JOIN salones s ON s.id=h.salon_id
+    LEFT JOIN profesores p ON o.rol='profesor' AND p.id=o.usuario_id
+    LEFT JOIN estudiantes e ON o.rol='estudiante' AND e.id=o.usuario_id
+    WHERE o.estado=$1 ORDER BY o.hora_envio DESC LIMIT $2 OFFSET $3`, [est, limit, offset]);
+  res.json({ page, total: r.rows[0]?.total ?? 0, items: r.rows });
+}));
+
+app.get('/api/admin/offline/:id/foto', admin, wrap(async (req, res) => {
+  const r = await q('SELECT foto_evidencia FROM asistencias_offline WHERE id=$1', [parseInt(req.params.id, 10) || 0]);
+  if (!r.rows[0]) throw new ErrorApp(404, 'No encontrado', 'NO_ENCONTRADO');
+  res.set('Cache-Control', 'private, max-age=3600').type('image/jpeg').send(r.rows[0].foto_evidencia);
+}));
+
+app.post('/api/admin/offline/:id/:accion', admin, wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10), accion = req.params.accion;
+  if (!id || !['aprobar', 'rechazar'].includes(accion)) throw new ErrorApp(404, 'No existe', 'NOT_FOUND');
+  const motivo = String(req.body?.motivo || '').trim().slice(0, 200) || null;
+  if (accion === 'rechazar') {
+    const u = await q(`UPDATE asistencias_offline SET estado='rechazada', motivo=$2, revisado_por=$3, revisado_en=now()
+                       WHERE id=$1 AND estado='pendiente'`, [id, motivo, req.user.sub]);
+    if (!u.rowCount) throw new ErrorApp(409, 'Ya fue revisada', 'YA_REVISADA');
+    return res.json({ success: true });
+  }
+  const c = await pool.connect();
+  try {
+    await c.query('BEGIN');
+    const o = (await c.query(`SELECT o.*, to_char(o.fecha,'YYYY-MM-DD') AS fecha_txt, h.hora_inicio::text AS ini
+                              FROM asistencias_offline o JOIN horarios h ON h.id=o.horario_id
+                              WHERE o.id=$1 FOR UPDATE OF o`, [id])).rows[0];
+    if (!o) throw new ErrorApp(404, 'No encontrado', 'NO_ENCONTRADO');
+    if (o.estado !== 'pendiente') throw new ErrorApp(409, 'Ya fue revisada', 'YA_REVISADA');
+    const t = L.ahora(new Date(o.hora_dispositivo)), ini = L.toMin(o.ini);
+    const hash = crypto.createHash('sha256').update(o.foto_evidencia).digest('hex');
+    try {
+      if (o.rol === 'profesor') {
+        const tarde = Math.max(0, t.min - ini);
+        await c.query(`INSERT INTO asistencias_profesor
+          (horario_id, profesor_id, fecha, hora_registro, estado, minutos_tarde, lat, lon, distancia_m, face_score, foto_hash)
+          VALUES ($1,$2,$3::date,$4,$5,$6,$7,$8,$9,$10,$11)`,
+          [o.horario_id, o.usuario_id, o.fecha_txt, o.hora_dispositivo, tarde <= cfg.tolMin ? 'a_tiempo' : 'tardanza',
+           tarde, o.lat, o.lon, o.distancia_m, o.score_evidencia, hash]);
+      } else {
+        await c.query(`INSERT INTO asistencias_estudiante
+          (horario_id, estudiante_id, fecha, hora_registro, estado, lat, lon, distancia_m, face_score, foto_hash)
+          VALUES ($1,$2,$3::date,$4,$5,$6,$7,$8,$9,$10)`,
+          [o.horario_id, o.usuario_id, o.fecha_txt, o.hora_dispositivo, t.min <= ini + cfg.estTolMin ? 'presente' : 'tardanza',
+           o.lat, o.lon, o.distancia_m, o.score_evidencia, hash]);
+      }
+    } catch (e) {
+      if (e.code === '23505') {
+        const foto = /foto_hash/.test(e.constraint || '');
+        throw new ErrorApp(409, foto ? 'Esa foto ya fue usada en otro registro' : 'Ya existe una asistencia para esa clase ese día',
+          foto ? 'FOTO_REPETIDA' : 'YA_REGISTRADA');
+      }
+      throw e;
+    }
+    await c.query(`UPDATE asistencias_offline SET estado='aprobada', motivo=$2, revisado_por=$3, revisado_en=now() WHERE id=$1`,
+      [id, motivo, req.user.sub]);
+    await c.query('COMMIT');
+    res.json({ success: true });
+  } catch (e) { await c.query('ROLLBACK').catch(() => {}); throw e; }
+  finally { c.release(); }
 }));
 
 // Liberar celular o reiniciar rostro (p. ej. cambió de teléfono)
