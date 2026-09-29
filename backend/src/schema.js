@@ -67,6 +67,35 @@ CREATE TABLE IF NOT EXISTS asistencias_estudiante (
   UNIQUE (horario_id, estudiante_id, fecha));
 CREATE INDEX IF NOT EXISTS idx_ae_est ON asistencias_estudiante(estudiante_id, fecha DESC);
 
+-- El profesor habilita la asistencia de los estudiantes para su clase de hoy.
+CREATE TABLE IF NOT EXISTS sesiones_clase (
+  horario_id INT NOT NULL REFERENCES horarios(id) ON DELETE CASCADE,
+  fecha DATE NOT NULL,
+  abierta_en TIMESTAMPTZ NOT NULL DEFAULT now(),
+  cerrada_en TIMESTAMPTZ,
+  PRIMARY KEY (horario_id, fecha));
+
+-- Evidencias tomadas sin internet: quedan pendientes hasta que un admin las revise.
+CREATE TABLE IF NOT EXISTS asistencias_offline (
+  id BIGSERIAL PRIMARY KEY,
+  client_id TEXT NOT NULL UNIQUE,
+  rol TEXT NOT NULL CHECK (rol IN ('profesor','estudiante')),
+  usuario_id INT NOT NULL,
+  horario_id INT NOT NULL REFERENCES horarios(id) ON DELETE CASCADE,
+  fecha DATE NOT NULL,
+  hora_dispositivo TIMESTAMPTZ NOT NULL,
+  hora_envio TIMESTAMPTZ NOT NULL DEFAULT now(),
+  lat DOUBLE PRECISION, lon DOUBLE PRECISION, distancia_m INT,
+  fuera_zona BOOLEAN NOT NULL DEFAULT false,
+  foto_evidencia BYTEA NOT NULL,
+  score_evidencia REAL, score_envio REAL,
+  estado TEXT NOT NULL DEFAULT 'pendiente' CHECK (estado IN ('pendiente','aprobada','rechazada')),
+  motivo TEXT, revisado_por INT, revisado_en TIMESTAMPTZ);
+CREATE INDEX IF NOT EXISTS idx_off_estado ON asistencias_offline(estado, hora_envio DESC);
+CREATE INDEX IF NOT EXISTS idx_off_usuario ON asistencias_offline(rol, usuario_id, hora_envio DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_off_unico
+  ON asistencias_offline(rol, usuario_id, horario_id, fecha) WHERE estado <> 'rechazada';
+
 CREATE OR REPLACE FUNCTION esperadas_prof(pid INT, desde DATE, hoy DATE, ahora_t TIME)
 RETURNS INT LANGUAGE sql STABLE AS $$
   SELECT count(*)::int FROM horarios h,
