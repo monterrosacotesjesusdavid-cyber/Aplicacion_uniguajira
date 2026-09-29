@@ -1,5 +1,8 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../../core/liveness_screen.dart';
+import '../../core/offline.dart';
+import '../../core/offline_widgets.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:intl/intl.dart';
 import '../../core/theme.dart';
@@ -19,20 +22,42 @@ class _ClasesEstState extends State<ClasesEstudianteScreen> {
   Position? _pos;
   bool _gpsLoading = true;
 
+  Timer? _poll;
+
   @override
-  void initState() { super.initState(); _initGps(); _load(); }
+  void initState() {
+    super.initState();
+    _initGps();
+    _load();
+    // Si el profesor aún no habilitó la asistencia, revisa cada 15 s sin molestar.
+    _poll = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (_clases.any((c) => c['esperando_profesor'] == true)) _load(silencioso: true);
+    });
+  }
+
+  @override
+  void dispose() { _poll?.cancel(); super.dispose(); }
 
   Future<void> _initGps() async {
     final p = await GpsHelper.obtenerPosicion();
-    setState(() { _pos = p; _gpsLoading = false; });
+    if (mounted) setState(() { _pos = p; _gpsLoading = false; });
   }
 
-  Future<void> _load() async {
-    setState(() => _loading = true);
+  Future<void> _load({bool silencioso = false}) async {
+    if (!silencioso) setState(() => _loading = true);
     try {
       final list = await Api.misClasesEstudiante();
-      setState(() { _clases = list; _loading = false; });
-    } catch (_) { setState(() => _loading = false); }
+      if (mounted) setState(() { _clases = list; _loading = false; });
+    } catch (_) { if (mounted) setState(() => _loading = false); }
+  }
+
+  Future<void> _guardarOffline(Map clase, String foto) async {
+    await OfflineQueue.agregar(
+      horarioId: clase['id'], materia: (clase['materia'] ?? '').toString(),
+      lat: _pos?.latitude, lon: _pos?.longitude, fotoBase64: foto);
+    if (!mounted) return;
+    _snack('Evidencia guardada. Se enviará cuando haya internet.');
+    _load();
   }
 
   Future<void> _firmar(Map clase) async {
@@ -42,6 +67,8 @@ class _ClasesEstState extends State<ClasesEstudianteScreen> {
     }
     final foto = await LivenessScreen.abrir(context, titulo: 'Verifica tu identidad');
     if (foto == null || !mounted) return;
+    // Sin internet: no se llama al servidor, se guarda la evidencia en el celular.
+    if (clase['offline'] == true) { await _guardarOffline(clase, foto); return; }
     final idx = _clases.indexOf(clase);
     setState(() => _clases[idx] = {...Map.from(clase), '_firmando': true});
     try {
@@ -56,9 +83,16 @@ class _ClasesEstState extends State<ClasesEstudianteScreen> {
         _snack(r['error'] ?? 'No se pudo firmar', error: true);
         setState(() => _clases[idx] = Map.from(clase));
       }
-    } catch (_) {
-      _snack('Error de conexión', error: true);
-      setState(() => _clases[idx] = Map.from(clase));
+    } catch (e) {
+      if (!mounted) return;
+      if (Net.esErrorDeRed(e)) {
+        // Se cayó el internet justo al firmar: se conserva la foto ya tomada.
+        Net.offline.value = true;
+        await _guardarOffline(clase, foto);
+      } else {
+        _snack('Error de conexión', error: true);
+        if (idx >= 0) setState(() => _clases[idx] = Map.from(clase));
+      }
     }
   }
 
@@ -77,7 +111,9 @@ class _ClasesEstState extends State<ClasesEstudianteScreen> {
         children: [
           // GPS
           _GpsBanner(loading: _gpsLoading, pos: _pos),
-          const SizedBox(height: 16),
+          const SizedBox(height: 12),
+          OfflineBanner(onCambio: _load),
+          const SizedBox(height: 4),
 
           // Cabecera
           Row(children: [
@@ -165,6 +201,8 @@ class _ClaseCard extends StatelessWidget {
     final firmando  = clase['_firmando'] == true;
     final msg       = (clase['mensaje'] ?? '') as String;
     final expirado  = msg.contains('expirado') || msg.contains('Ausente');
+    final pend      = clase['pendiente_offline'] == true;
+    final esperando = clase['esperando_profesor'] == true;
 
     return Card(child: Column(children: [
       // Info clase
@@ -195,8 +233,16 @@ class _ClaseCard extends StatelessWidget {
         // Estado badge
         _EstadoBadge(
           yaFirmo: yaFirmo, disponible: disponible,
-          expirado: expirado, msg: msg),
+          expirado: expirado, msg: msg, pendiente: pend, esperando: esperando),
       ])),
+      if (esperando)
+        Padding(padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+          child: Row(children: [
+            const Icon(Icons.hourglass_top_rounded, size: 14, color: C.doradoClaro),
+            const SizedBox(width: 6),
+            Expanded(child: Text(msg,
+              style: const TextStyle(color: C.doradoClaro, fontSize: 11))),
+          ])),
 
       // Botones
       Padding(padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
@@ -222,7 +268,9 @@ class _ClaseCard extends StatelessWidget {
               ? const SizedBox(width: 14, height: 14,
                   child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
               : Icon(yaFirmo ? Icons.check_circle_rounded : Icons.edit_rounded, size: 16),
-            label: Text(yaFirmo ? 'Firmado' : (disponible ? 'Firmar' : 'No disp.')),
+            label: Text(yaFirmo ? 'Firmado' : pend ? 'Guardado'
+                : (disponible ? (clase['offline'] == true ? 'Tomar evidencia' : 'Firmar')
+                    : (esperando ? 'Esperando' : 'No disp.'))),
             style: ElevatedButton.styleFrom(
               backgroundColor: yaFirmo ? C.verde.withOpacity(0.4)
                 : (expirado ? C.rojo.withOpacity(0.3) : C.verde),
@@ -239,15 +287,18 @@ class _ClaseCard extends StatelessWidget {
 }
 
 class _EstadoBadge extends StatelessWidget {
-  final bool yaFirmo, disponible, expirado; final String msg;
+  final bool yaFirmo, disponible, expirado, pendiente, esperando; final String msg;
   const _EstadoBadge({required this.yaFirmo, required this.disponible,
-    required this.expirado, required this.msg});
+    required this.expirado, required this.msg,
+    this.pendiente = false, this.esperando = false});
 
   @override
   Widget build(BuildContext context) {
     Color col, bg;
     String txt;
     if (yaFirmo)        { col = C.verdeClaro; bg = C.verde.withOpacity(0.12); txt = 'Firmado'; }
+    else if (pendiente) { col = C.doradoClaro; bg = C.dorado.withOpacity(0.12); txt = 'Pendiente'; }
+    else if (esperando) { col = C.doradoClaro; bg = C.dorado.withOpacity(0.12); txt = 'Esperando'; }
     else if (disponible){ col = Colors.amber.shade400; bg = Colors.amber.withOpacity(0.1); txt = 'Disponible'; }
     else if (expirado)  { col = C.rojo; bg = C.rojo.withOpacity(0.1); txt = 'Expirado'; }
     else                { col = C.suave; bg = C.borde; txt = 'En espera'; }
