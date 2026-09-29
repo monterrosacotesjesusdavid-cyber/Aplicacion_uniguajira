@@ -56,7 +56,9 @@ class _SplashState extends State<Splash> with SingleTickerProviderStateMixin {
     final p = await SharedPreferences.getInstance();
     final token = await Api.getToken();
     final rol   = p.getString('rol');
-    final Widget dest = (token != null && rol != null)
+    // Entrar sin internet deja la sesión sin token: también cuenta como sesión abierta.
+    final abierta = token != null || p.getBool('sesion_offline') == true;
+    final Widget dest = (abierta && rol != null)
         ? destinoPorRol(rol, rostroRegistrado: await Api.rostroRegistrado())
         : const LoginScreen();
     Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => dest));
