@@ -146,7 +146,8 @@ class _LoginState extends State<LoginScreen>
                         const Icon(Icons.info_outline_rounded, color: C.verdeClaro, size: 16),
                         const SizedBox(width: 8),
                         Expanded(child: Text(
-                          'Estudiante: escribe tu usuario (sin @)\nProfesor: escribe tu cédula',
+                          'Estudiante: escribe tu usuario (sin @)\nProfesor: escribe tu cédula\n'
+                          'Sin internet: puedes entrar si ya iniciaste sesión antes en este celular.',
                           style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 11),
                         )),
                       ]),
