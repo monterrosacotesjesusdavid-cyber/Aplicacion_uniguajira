@@ -90,21 +90,20 @@ const toMin = (t) => { const [h, m] = String(t).split(':'); return +h * 60 + +m;
 const hhmm = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 
 // Ventana del profesor: [inicio-antes, inicio+tol] a tiempo; hasta inicio+limite tardanza
-function ventanaProfesor(ini, now) {
+function ventanaProfesor(ini, now, fin) {
   const abre = ini - cfg.antesMin;
   if (now < abre) return { disponible: false, estado: null, mensaje: `Disponible a las ${hhmm(abre)}`, tarde: 0 };
   if (now <= ini + cfg.tolMin) return { disponible: true, estado: 'a_tiempo', mensaje: 'A tiempo', tarde: 0 };
-  if (now <= ini + cfg.limiteMin) {
+  if (now <= fin) {
     const t = now - ini;
     return { disponible: true, estado: 'tardanza', mensaje: `Tardanza (+${t} min)`, tarde: t };
   }
   return { disponible: false, estado: null, mensaje: 'Tiempo expirado — Ausente', tarde: 0 };
 }
-// Ventana del estudiante: desde el inicio hasta el fin de la clase
+// Ventana del estudiante: desde el inicio hasta EST_TOL_MIN minutos después
 function ventanaEstudiante(ini, fin, now) {
   if (now < ini) return { disponible: false, estado: null, mensaje: `Disponible a las ${hhmm(ini)}` };
   if (now <= ini + cfg.estTolMin) return { disponible: true, estado: 'presente', mensaje: 'Presente' };
-  if (now <= fin) return { disponible: true, estado: 'tardanza', mensaje: 'Tardanza' };
   return { disponible: false, estado: null, mensaje: 'Tiempo expirado — Ausente' };
 }
 
