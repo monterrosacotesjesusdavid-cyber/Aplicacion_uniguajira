@@ -259,7 +259,7 @@ app.post('/api/profesor/registrar-asistencia', auth(['profesor']), limFirma, wra
   const p = await q('SELECT activo FROM profesores WHERE id=$1', [req.user.sub]);
   if (!p.rows[0]?.activo) throw new ErrorApp(403, 'Cuenta desactivada', 'INACTIVO');
   const r = await q(`
-    SELECT h.hora_inicio::text AS ini, s.lat, s.lon, s.radio_m
+    SELECT h.hora_inicio::text AS ini, h.hora_fin::text AS fin, s.lat, s.lon, s.radio_m
     FROM horarios h LEFT JOIN salones s ON s.id=h.salon_id
     WHERE h.id=$1 AND h.profesor_id=$2 AND h.dia_semana=$3`, [hid, req.user.sub, t.dow]);
   const h = r.rows[0];
