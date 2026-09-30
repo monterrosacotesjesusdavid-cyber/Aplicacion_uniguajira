@@ -266,7 +266,7 @@ app.post('/api/profesor/registrar-asistencia', auth(['profesor']), limFirma, wra
   if (!h) throw new ErrorApp(404, 'Esa clase no es hoy o no te pertenece', 'NO_CLASE');
   const ya = await q('SELECT 1 FROM asistencias_profesor WHERE horario_id=$1 AND fecha=$2::date', [hid, t.fecha]);
   if (ya.rowCount) throw new ErrorApp(409, 'Ya registraste esta clase', 'YA_REGISTRADA');
-  const v = L.ventanaProfesor(L.toMin(h.ini), t.min);
+  const v = L.ventanaProfesor(L.toMin(h.ini), t.min, L.toMin(h.fin));
   if (!v.disponible) throw new ErrorApp(403, v.mensaje, 'FUERA_DE_HORARIO');
   const z = L.chequearZona(lat, lon, h);
   if (!z.ok) throw new ErrorApp(403, `Estás fuera del salón (a ${z.dist} m)`, 'FUERA_DE_ZONA');
