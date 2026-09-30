@@ -7,7 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'offline.dart';
 
-const String kBase = 'https://nodeapkuniguajira-production.up.railway.app/api';
+const String kBase = 'https://aplicacionuniguajira-production.up.railway.app/api';
 
 class Api {
   // ── SESIÓN ────────────────────────────────────────────────────────
