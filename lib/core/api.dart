@@ -6,7 +6,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'offline.dart';
-
+//url del servidor
 const String kBase = 'https://aplicacionuniguajira-production.up.railway.app/api';
 
 class Api {
