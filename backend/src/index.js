@@ -239,7 +239,7 @@ app.get('/api/profesor/clases-hoy', auth(['profesor']), wrap(async (req, res) =>
     ORDER BY h.hora_inicio`, [req.user.sub, t.dow, t.fecha]);
   res.json(r.rows.map((c) => {
     if (c.asistencia_estado) return { ...c, disponible: false, mensaje: '' };
-    const v = L.ventanaProfesor(L.toMin(c.hora_inicio), t.min, L.toMin(c.hora_fin)));
+    const v = L.ventanaProfesor(L.toMin(c.hora_inicio), t.min, L.toMin(c.hora_fin));
     return { ...c, disponible: v.disponible, mensaje: v.mensaje };
   }));
 }));
