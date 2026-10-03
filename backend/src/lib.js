@@ -72,7 +72,7 @@ function decrypt(b64) {
 }
 
 // ── JWT ──
-const firmar = (u) => jwt.sign(u, cfg.jwtSecret, { expiresIn: '14d' });
+const firmar = (u) => jwt.sign(u, cfg.jwtSecret, { expiresIn: '1d' });
 const verificar = (t) => jwt.verify(t, cfg.jwtSecret);
 
 // ── Tiempo (siempre hora de Colombia) ──
