@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/theme.dart';
@@ -81,13 +82,48 @@ class _ClasesProfState extends State<ClasesProfScreen> {
   bool _loading = true;
   Position? _pos;
   bool _gpsLoading = true;
+  Timer? _reloj;
+  Set<String> _vistas = {};
+  bool _vistasListas = false;
+
+  // Una clase sale de la lista cuando terminó Y ya se marcó como vista (así se anima una vez).
+  bool _sale(dynamic c) => claseTerminada(c) && _vistas.contains(ClasesVistas.clave(c));
+
+  // Marca las clases terminadas que aún no se han visto salir; tras un instante
+  // (para que se vea la tarjeta) pasan a animarse y se recuerdan.
+  void _marcarFinalizadas() {
+    if (!_vistasListas) return;
+    final nuevas = _clases
+        .where((c) => claseTerminada(c) && !_vistas.contains(ClasesVistas.clave(c)))
+        .map<String>((c) => ClasesVistas.clave(c)).toSet();
+    if (nuevas.isEmpty) return;
+    Future.delayed(const Duration(milliseconds: 900), () {
+      if (!mounted) return;
+      setState(() => _vistas = {..._vistas, ...nuevas});
+      ClasesVistas.guardar(_vistas);
+    });
+  }
 
   bool get _soloVirtual =>
       _clases.isNotEmpty && _clases.every((c) => c['modalidad'] == 'virtual');
 
   @override
+  void dispose() { _reloj?.cancel(); super.dispose(); }
+
+  @override
   void initState() {
     super.initState();
+    // Cada 20 s revisa si alguna clase ya pasó su hora final.
+    ClasesVistas.cargar().then((v) {
+      if (!mounted) return;
+      setState(() { _vistas = v; _vistasListas = true; });
+      _marcarFinalizadas();
+    });
+    _reloj = Timer.periodic(const Duration(seconds: 20), (_) {
+      if (!mounted) return;
+      setState(() {});
+      _marcarFinalizadas();
+    });
     // Las clases virtuales no usan GPS: solo se pide ubicación si hay alguna presencial.
     _load().then((_) {
       if (!_soloVirtual) {
@@ -108,6 +144,7 @@ class _ClasesProfState extends State<ClasesProfScreen> {
     try {
       final list = await Api.misClasesProfesor();
       if (mounted) setState(() { _clases = list; _loading = false; });
+      _marcarFinalizadas();
     } catch (_) { if (mounted) setState(() => _loading = false); }
   }
 
@@ -194,9 +231,13 @@ class _ClasesProfState extends State<ClasesProfScreen> {
   @override
   Widget build(BuildContext context) {
     final n = _clases.length;
+    final activas = _clases.where((c) => !_sale(c)).length;
     final resumen = (_loading || n == 0) ? ''
-        : n == 1 ? 'Tienes 1 clase hoy' : 'Tienes $n clases hoy';
+        : activas == 0 ? 'Ya terminaron tus clases de hoy'
+        : activas == n ? (n == 1 ? 'Tienes 1 clase hoy' : 'Tienes $n clases hoy')
+        : (activas == 1 ? 'Te queda 1 clase hoy' : 'Te quedan $activas clases hoy');
     final sinClases = !_loading && n == 0;
+    final todasTerminadas = !_loading && n > 0 && activas == 0;
 
     return RefreshIndicator(
       onRefresh: () async { await _load(); if (!_soloVirtual) await _initGps(); },
@@ -230,10 +271,10 @@ class _ClasesProfState extends State<ClasesProfScreen> {
                 mensaje: 'Tu próxima clase:',
                 extra: ProximaClase(cargar: Api.horarioSemanaProfesor)))
           else
-            ...List.generate(_clases.length, (i) { final c = _clases[i]; return Aparece(
+            ...List.generate(_clases.length, (i) { final c = _clases[i]; return ClaseSaliente(
+              terminada: _sale(c),
+              child: Aparece(
               orden: i,
-              child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
               child: _ClaseProfCard(
                 clase: c, gpsOk: _pos != null,
                 onFirmar: () => _firmar(c),
@@ -247,6 +288,15 @@ class _ClasesProfState extends State<ClasesProfScreen> {
                     horarioId: c['id'], materia: (c['materia'] ?? '').toString()))),
               ),
             ));}),
+          if (todasTerminadas)
+            Aparece(
+              orden: 2,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: EstadoVacio(
+                  titulo: 'Ya terminaron tus clases de hoy',
+                  mensaje: 'Tu próxima clase:',
+                  extra: ProximaClase(cargar: Api.horarioSemanaProfesor)))),
         ],
       ),
     );
