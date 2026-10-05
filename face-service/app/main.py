@@ -1,4 +1,4 @@
-"""Servicio de reconocimiento facial (InsightFace) para UniGuajira Asistencia.
+"""Servicio de reconociimiento facial (InsightFace) para UniGuajira Asistencia.
 
 Sin estado: no guarda fotos ni embeddings. Tu backend Node guarda el embedding
 (cifrado) y lo envía en cada verificación 1:1.
