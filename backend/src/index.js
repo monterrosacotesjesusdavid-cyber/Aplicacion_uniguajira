@@ -18,7 +18,7 @@ const HORA_ISO = (c) => `to_char(${c} AT TIME ZONE 'America/Bogota','YYYY-MM-DD"
 const TABLA = { profesor: 'profesores', estudiante: 'estudiantes' };
 const DIAS = ['', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
 
-// ── Auth / middlewares ─────────────────────────────────────────────
+// ── Auth / middlewarkes ─────────────────────────────────────────────
 function auth(roles) {
   return (req, res, next) => {
     try {
