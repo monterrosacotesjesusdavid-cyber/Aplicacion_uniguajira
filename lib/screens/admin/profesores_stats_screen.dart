@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import '../../core/theme.dart';
+import '../../core/admin_ui.dart';
 import '../../core/api.dart';
 import 'detalle_profesor_screen.dart';
 
@@ -15,6 +15,7 @@ class _ProfStatsState extends State<ProfesoresStatsScreen> {
   bool _loadingMore = false;
   bool _hayMas = true;
   int _page = 1;
+  int _total = 0;
   String _busqueda = '';
   final _searchCtrl = TextEditingController();
   final _scroll = ScrollController();
@@ -47,6 +48,7 @@ class _ProfStatsState extends State<ProfesoresStatsScreen> {
         busqueda: _busqueda, page: reset ? 1 : _page);
       final list = (r['profesores'] as List?) ?? [];
       final total = r['total'] as int? ?? 0;
+      if (!mounted) return;
       setState(() {
         if (reset) {
           _profs = list;
@@ -55,12 +57,13 @@ class _ProfStatsState extends State<ProfesoresStatsScreen> {
           _profs.addAll(list);
           _page++;
         }
+        _total = total;
         _hayMas = _profs.length < total;
         _loading = false;
         _loadingMore = false;
       });
     } catch (_) {
-      setState(() { _loading = false; _loadingMore = false; });
+      if (mounted) setState(() { _loading = false; _loadingMore = false; });
     }
   }
 
@@ -69,22 +72,28 @@ class _ProfStatsState extends State<ProfesoresStatsScreen> {
     _load(reset: true);
   }
 
+  Widget _leyenda(Color c, String t) => Row(mainAxisSize: MainAxisSize.min, children: [
+    Container(width: 8, height: 8,
+      decoration: BoxDecoration(color: c, shape: BoxShape.circle)),
+    const SizedBox(width: 5),
+    Text(t, style: const TextStyle(color: A.suave, fontSize: 11)),
+  ]);
+
   @override
   Widget build(BuildContext context) {
     return Column(children: [
-      // Búsqueda
       Padding(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 6),
         child: TextField(
           controller: _searchCtrl,
           onChanged: _buscar,
-          style: TextStyle(color: C.tinta),
+          style: const TextStyle(color: A.texto),
           decoration: InputDecoration(
             hintText: 'Buscar por nombre o cédula...',
-            prefixIcon: Icon(Icons.search, color: C.suave, size: 20),
+            prefixIcon: const Icon(Icons.search_rounded, color: A.suave, size: 20),
             suffixIcon: _busqueda.isNotEmpty
               ? IconButton(
-                  icon: Icon(Icons.clear, color: C.suave, size: 18),
+                  icon: const Icon(Icons.close_rounded, color: A.suave, size: 18),
                   onPressed: () {
                     _searchCtrl.clear();
                     _buscar('');
@@ -93,28 +102,35 @@ class _ProfStatsState extends State<ProfesoresStatsScreen> {
           ),
         ),
       ),
-
-      // Lista
+      Padding(
+        padding: const EdgeInsets.fromLTRB(20, 4, 20, 6),
+        child: Row(children: [
+          Text(_loading ? ' ' : '$_total profesores',
+            style: const TextStyle(color: A.suave, fontSize: 12)),
+          const Spacer(),
+          _leyenda(A.ok, 'A tiempo'), const SizedBox(width: 10),
+          _leyenda(A.warn, 'Tarde'), const SizedBox(width: 10),
+          _leyenda(A.mal, 'Ausente'),
+        ]),
+      ),
       Expanded(
         child: _loading
-          ? const Center(child: CircularProgressIndicator(color: C.verde))
+          ? const Center(child: CircularProgressIndicator(color: A.oro))
           : _profs.isEmpty
-            ? Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                Icon(Icons.search_off_rounded, size: 48, color: C.suave),
-                const SizedBox(height: 12),
-                Text(_busqueda.isEmpty ? 'Sin profesores' : 'Sin resultados para "$_busqueda"',
-                  style: TextStyle(color: C.tinta)),
-              ]))
+            ? AdmVacio(Icons.search_off_rounded,
+                _busqueda.isEmpty ? 'Sin profesores' : 'Sin resultados',
+                sub: _busqueda.isEmpty ? null : 'No hay coincidencias para "$_busqueda"')
             : ListView.separated(
                 controller: _scroll,
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 20),
+                padding: const EdgeInsets.fromLTRB(16, 6, 16, 20),
                 itemCount: _profs.length + (_loadingMore ? 1 : 0),
-                separatorBuilder: (_, __) => const SizedBox(height: 8),
+                separatorBuilder: (_, __) => const SizedBox(height: 10),
                 itemBuilder: (_, i) {
                   if (i == _profs.length) {
                     return const Center(child: Padding(
                       padding: EdgeInsets.all(16),
-                      child: CircularProgressIndicator(color: C.verde, strokeWidth: 2)));
+                      child: CircularProgressIndicator(
+                        color: A.oro, strokeWidth: 2)));
                   }
                   final p = _profs[i];
                   final aT = p['a_tiempo'] as int? ?? 0;
@@ -122,65 +138,58 @@ class _ProfStatsState extends State<ProfesoresStatsScreen> {
                   final aus = p['ausencias'] as int? ?? 0;
                   final total = aT + tard + aus;
                   final pct = total > 0 ? ((aT + tard) / total * 100).round() : 0;
-                  Color pctColor;
-                  if (pct >= 80)      pctColor = C.verdeClaro;
-                  else if (pct >= 60) pctColor = C.naranja;
-                  else                pctColor = C.rojo;
+                  final pctColor = pct >= 80 ? A.ok : pct >= 60 ? A.warn : A.mal;
+                  final nombre = (p['nombre'] as String?) ?? '';
 
-                  return Card(child: InkWell(
-                    borderRadius: BorderRadius.circular(8),
+                  return AdmCard(
+                    padding: const EdgeInsets.all(14),
                     onTap: () => Navigator.push(context, MaterialPageRoute(
                       builder: (_) => DetalleProfesorScreen(
-                        profesorId: p['id'], nombre: p['nombre']))),
-                    child: Padding(
-                      padding: const EdgeInsets.all(14),
-                      child: Row(children: [
-                        CircleAvatar(
-                          radius: 22,
-                          backgroundColor: C.verde.withOpacity(0.15),
+                        profesorId: p['id'], nombre: nombre))),
+                    child: Row(children: [
+                      Container(
+                        padding: const EdgeInsets.all(2),
+                        decoration: const BoxDecoration(
+                          shape: BoxShape.circle, gradient: A.gradOro),
+                        child: CircleAvatar(
+                          radius: 22, backgroundColor: A.card2,
                           child: Text(
-                            (p['nombre'] as String? ?? 'X')[0].toUpperCase(),
-                            style: TextStyle(color: C.verdeClaro,
-                              fontSize: 16, fontWeight: FontWeight.w700)),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start, children: [
-                          Text(p['nombre'] ?? '', style: TextStyle(
-                            color: C.tinta, fontSize: 13, fontWeight: FontWeight.w600)),
-                          Text('CC ${p['cedula']}',
-                            style: TextStyle(color: C.tinta.withOpacity(0.4), fontSize: 11)),
-                          const SizedBox(height: 6),
-                          // Mini barra
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(4),
-                            child: LinearProgressIndicator(
-                              value: pct / 100,
-                              backgroundColor: C.borde,
-                              valueColor: AlwaysStoppedAnimation(pctColor),
-                              minHeight: 4,
-                            )),
-                        ])),
-                        const SizedBox(width: 12),
-                        Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-                          Text('$pct%', style: TextStyle(
-                            color: pctColor, fontSize: 20, fontWeight: FontWeight.w800)),
-                          Text('asistencia', style: TextStyle(
-                            color: C.tinta.withOpacity(0.4), fontSize: 10)),
-                          const SizedBox(height: 4),
-                          Row(children: [
-                            _Mini('$aT', C.verdeClaro),
-                            const SizedBox(width: 4),
-                            _Mini('$tard', C.naranja),
-                            const SizedBox(width: 4),
-                            _Mini('$aus', C.rojo),
-                          ]),
+                            nombre.isEmpty ? '?' : nombre[0].toUpperCase(),
+                            style: const TextStyle(color: A.oroClaro,
+                              fontSize: 17, fontWeight: FontWeight.w800)))),
+                      const SizedBox(width: 12),
+                      Expanded(child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Text(nombre, maxLines: 1, overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(color: A.texto,
+                            fontSize: 13.5, fontWeight: FontWeight.w700)),
+                        const SizedBox(height: 2),
+                        Text('CC ${p['cedula']}',
+                          style: const TextStyle(color: A.suave, fontSize: 11.5)),
+                        const SizedBox(height: 9),
+                        AdmBarra(pct / 100, pctColor),
+                      ])),
+                      const SizedBox(width: 14),
+                      Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                        Text('$pct%', style: TextStyle(color: pctColor,
+                          fontSize: 21, fontWeight: FontWeight.w800, height: 1)),
+                        const SizedBox(height: 2),
+                        const Text('asistencia', style: TextStyle(
+                          color: A.suave, fontSize: 10)),
+                        const SizedBox(height: 6),
+                        Row(mainAxisSize: MainAxisSize.min, children: [
+                          _Mini('$aT', A.ok),
+                          const SizedBox(width: 4),
+                          _Mini('$tard', A.warn),
+                          const SizedBox(width: 4),
+                          _Mini('$aus', A.mal),
                         ]),
-                        const SizedBox(width: 4),
-                        Icon(Icons.chevron_right_rounded, color: C.suave, size: 18),
                       ]),
-                    ),
-                  ));
+                      const SizedBox(width: 2),
+                      const Icon(Icons.chevron_right_rounded,
+                        color: A.suave, size: 20),
+                    ]),
+                  );
                 },
               ),
       ),
@@ -189,13 +198,19 @@ class _ProfStatsState extends State<ProfesoresStatsScreen> {
 }
 
 class _Mini extends StatelessWidget {
-  final String val; final Color color;
+  final String val;
+  final Color color;
   const _Mini(this.val, this.color);
+
   @override
   Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+    constraints: const BoxConstraints(minWidth: 24),
+    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
     decoration: BoxDecoration(
-      color: color.withOpacity(0.15), borderRadius: BorderRadius.circular(6)),
-    child: Text(val, style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.w700)),
+      color: color.withOpacity(0.14),
+      borderRadius: BorderRadius.circular(8),
+      border: Border.all(color: color.withOpacity(0.28))),
+    child: Text(val, textAlign: TextAlign.center, style: TextStyle(
+      color: color, fontSize: 10.5, fontWeight: FontWeight.w800)),
   );
 }
